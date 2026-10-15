@@ -28,8 +28,10 @@
   button.danger { border-color: var(--accent); color: var(--accent); }
   input[type=file] { display: none; }
   #status { min-height: 1.5em; color: var(--text); }
-  #error { color: #ff9a8f; white-space: pre-wrap; }
+  #error, #gpuWarning { color: #ff9a8f; white-space: pre-wrap; }
   p.small { font-size: 13px; margin-top: 20px; }
+  /* Empty status / error lines take no room (otherwise a gap sits under the warning above them). */
+  #status:empty, #error:empty { display: none; }
   h2 { margin: 16px 0 4px; font-size: 15px; }
   ul.issues { margin: 0; padding-left: 20px; color: var(--muted); }
   ul.issues li { margin: 2px 0; }
@@ -48,6 +50,7 @@
       <li>On some Linux setups, switching to another window while playing can crash the browser's graphics process,
         which stops the game. Reload to keep playing; progress since your last save is lost.</li>
     </ul>
+    <p id="gpuWarning" hidden></p>
     <p id="error"></p>
     <p id="status"></p>
     <div class="row">
@@ -78,6 +81,25 @@
     if (typeof WebAssembly.Suspending !== 'function') missing.push('WebAssembly JavaScript Promise Integration (JSPI)');
     if (!navigator.storage?.getDirectory) missing.push('the Origin Private File System');
     return missing;
+  }
+
+  // aurora (gpu.cpp) asks for an adapter with these options and refuses a software (fallback) one,
+  // which a Chromium without a working GPU path hands out -- on Linux, often until Vulkan is turned on.
+  // Same request here, so the page can say so before Play instead of the game stopping at startup.
+  async function checkGpu() {
+    let adapter = null;
+    try {
+      adapter = await navigator.gpu.requestAdapter({ featureLevel: 'compatibility', powerPreference: 'high-performance' });
+    } catch {}
+    if (adapter && !(adapter.info?.isFallbackAdapter ?? adapter.isFallbackAdapter)) return;
+    const linux = /Linux/.test(navigator.userAgent) && !/Android/.test(navigator.userAgent);
+    $('gpuWarning').textContent = (adapter
+      ? 'Your browser only offers software rendering for WebGPU, which the game can\'t use, so it will probably not start.'
+      : 'Your browser didn\'t provide a WebGPU graphics adapter, so the game will probably not start.') +
+      (linux
+        ? '\nTo fix this, open chrome://flags/#enable-vulkan, set it to Enabled and restart the browser.'
+        : '\nCheck that hardware acceleration is turned on in the browser\'s settings.');
+    $('gpuWarning').hidden = false;
   }
 
   async function discDir() {
@@ -434,6 +456,7 @@
       $('chooseLabel').hidden = true;
       return;
     }
+    checkGpu();
     const name = await storedDiscName();
     if (name) {
       setStatus(`Disc image: ${name}`);
