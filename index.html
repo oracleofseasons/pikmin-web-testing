@@ -34,16 +34,16 @@
 <div id="panel">
   <div class="card">
     <h1>Pikmin Native</h1>
-    <p>Plays your own copy of Pikmin for GameCube (USA, revision 1) in the browser. The disc image stays on
-       this computer: it is copied into this site's private browser storage, never uploaded.</p>
+    <p>Not available in the browser version yet: Super Mario 64 Mode, Online Co&#8209;op, Pikmin 2 Mode, texture packs,
+       custom characters and Discord Rich Presence.</p>
     <p id="error"></p>
     <p id="status"></p>
     <div class="row">
       <button id="play" hidden>Play</button>
-      <label class="button" id="chooseLabel" for="disc">Choose disc image…</label>
+      <label class="button" id="chooseLabel" for="disc">Choose disc image (USA, Rev 1)…</label>
       <input id="disc" type="file" accept=".iso,.gcm,.rvz,.ciso,.gcz,.wia,.wbfs,.tgc,.nfs">
     </div>
-    <p class="small">Saves and settings are kept in this browser. Export them to a file now and then: clearing
+    <p class="small">Saves and settings are kept in this browser. Export them to a file often. Clearing
        this site's data deletes them.</p>
     <div class="row">
       <button class="secondary" id="export">Export saves</button>
@@ -333,7 +333,7 @@
       setStatus(`Disc image: ${name}`);
       $('play').hidden = false;
       $('chooseLabel').classList.add('secondary');
-      $('chooseLabel').textContent = 'Choose a different disc…';
+      $('chooseLabel').textContent = 'Choose a different disc (USA, Rev 1)…';
     }
   })();
 </script>
