@@ -23,6 +23,7 @@
   button, label.button { background: var(--accent); color: #fff; border: 0; border-radius: 6px; padding: 9px 16px;
     font: inherit; cursor: pointer; }
   button.secondary, label.button.secondary { background: transparent; border: 1px solid var(--line); color: var(--text); }
+  button.danger { border-color: var(--accent); color: var(--accent); }
   input[type=file] { display: none; }
   #status { min-height: 1.5em; color: var(--text); }
   #error { color: #ff9a8f; white-space: pre-wrap; }
@@ -49,6 +50,7 @@
       <button class="secondary" id="export">Export saves</button>
       <label class="button secondary" for="import">Import saves…</label>
       <input id="import" type="file" accept=".zip">
+      <button class="secondary danger" id="reset">Reset all data…</button>
     </div>
   </div>
 </div>
@@ -222,27 +224,80 @@
     setStatus(`Exported ${files.length} files.`);
   }
 
+  // A memory card save's identity: its .gci header's game code + maker code (bytes 0-5) and file name
+  // (0x08-0x27), whatever the .gci file itself is called -- not bytes 6-7 (padding, banner format), which
+  // differ between copies of the same save. The card folder must hold one .gci per identity, or the game
+  // opens whichever it finds first.
+  const gciKey = (bytes) => bytes.length >= 0x28
+    ? [...bytes.subarray(0, 6), ...bytes.subarray(8, 0x28)].join(',') : null;
+
   async function importSaves(file) {
     const files = await readZip(await file.arrayBuffer());
     const root = await dataDir();
-    let written = 0;
+    let written = 0, replaced = 0;
     for (const f of files) {
       const parts = f.path.split('/').filter((s) => s && s !== '.' && s !== '..');
       if (!parts.length || isCache(parts[parts.length - 1])) continue;
       let dir = root;
       for (const part of parts.slice(0, -1)) dir = await dir.getDirectoryHandle(part, { create: true });
-      const writable = await (await dir.getFileHandle(parts[parts.length - 1], { create: true })).createWritable();
+      const name = parts[parts.length - 1];
+      const key = name.toLowerCase().endsWith('.gci') ? gciKey(f.bytes) : null;
+      if (key) {
+        // The same save under another file name (e.g. the empty one the game made on its first start):
+        // the imported one replaces it.
+        const same = [];
+        for await (const [other, handle] of dir.entries()) {
+          if (other === name || handle.kind !== 'file' || !other.toLowerCase().endsWith('.gci')) continue;
+          const head = new Uint8Array(await (await handle.getFile()).slice(0, 0x28).arrayBuffer());
+          if (gciKey(head) === key) same.push(other);
+        }
+        for (const other of same) { await dir.removeEntry(other); replaced++; }
+      }
+      const writable = await (await dir.getFileHandle(name, { create: true })).createWritable();
       await writable.write(f.bytes);
       await writable.close();
       written++;
     }
-    setStatus(`Imported ${written} files.`);
+    setStatus(`Imported ${written} files${replaced ? ` (replaced ${replaced} existing memory card save${replaced > 1 ? 's' : ''})` : ''}.`);
   }
 
   $('export').addEventListener('click', () => exportSaves().catch((e) => setError(`Export failed: ${e.message}`)));
-  $('import').addEventListener('change', (event) => {
+  $('import').addEventListener('change', async (event) => {
     const file = event.target.files[0];
-    if (file) importSaves(file).catch((e) => setError(`Import failed: ${e.message}`));
+    event.target.value = ''; // so picking the same file again fires 'change' again
+    if (!file) return;
+    setError('');
+    try {
+      const existing = await collectSaves(await dataDir(), '', []);
+      if (existing.some((f) => f.path.toLowerCase().endsWith('.gci')) &&
+          !confirm(`Import saves from "${file.name}"?\n\nSaves and settings in this browser that are also in the file ` +
+                   '(including a memory card save for the same game) will be overwritten. Export your current ' +
+                   'saves first if you want to keep them.')) {
+        setStatus('Import cancelled.');
+        return;
+      }
+      await importSaves(file);
+    } catch (e) {
+      setError(`Import failed: ${e.message}`);
+    }
+  });
+  // Everything this site keeps: saves, settings, caches and the stored disc image.
+  $('reset').addEventListener('click', async () => {
+    if (!confirm('Delete ALL data this site keeps in this browser?\n\nThis deletes your saves, settings and the ' +
+                 'stored disc image, and can\'t be undone. Export your saves first if you want to keep them.')) {
+      return;
+    }
+    setError('');
+    try {
+      const root = await navigator.storage.getDirectory();
+      const names = [];
+      for await (const name of root.keys()) names.push(name);
+      for (const name of names) await root.removeEntry(name, { recursive: true });
+      setStatus('All data deleted. Reloading…');
+      location.reload();
+    } catch (e) {
+      setError(`Reset failed: ${e.message}`);
+    }
   });
 
   // The display's refresh rate for the game's Match Refresh Rate (browsers don't report it): the median of
