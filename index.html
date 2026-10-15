@@ -15,6 +15,8 @@
   #canvas { position: fixed; inset: 0; display: block; background: #000; width: 100vw; height: 100vh; outline: none; }
   #panel { position: absolute; inset: 0; display: flex; align-items: center; justify-content: center; padding: 16px; }
   #panel[hidden] { display: none; }
+  #stopped { position: fixed; inset: 0; z-index: 10; display: flex; align-items: center; justify-content: center;
+    padding: 16px; background: rgba(0, 0, 0, 0.7); }
   .card { background: var(--panel); border: 1px solid var(--line); border-radius: 10px; padding: 24px 28px;
     max-width: 560px; width: 100%; box-sizing: border-box; }
   h1 { margin: 0 0 8px; font-size: 22px; }
@@ -28,6 +30,9 @@
   #status { min-height: 1.5em; color: var(--text); }
   #error { color: #ff9a8f; white-space: pre-wrap; }
   p.small { font-size: 13px; margin-top: 20px; }
+  h2 { margin: 16px 0 4px; font-size: 15px; }
+  ul.issues { margin: 0; padding-left: 20px; color: var(--muted); }
+  ul.issues li { margin: 2px 0; }
 </style>
 </head>
 <body>
@@ -37,7 +42,12 @@
     <h1>Pikmin Native</h1>
     <p>Not available in the browser version yet: Super Mario 64 Mode, Online Co&#8209;op, Pikmin 2 Mode, texture packs,
        custom characters and Discord Rich Presence.</p>
-    <p>The game may stutter for a few seconds when loading a level for the first time, due to shader compilation.</p>
+    <h2>Known issues</h2>
+    <ul class="issues">
+      <li>The game may stutter for a few seconds when loading a level for the first time, due to shader compilation.</li>
+      <li>On some Linux setups, switching to another window while playing can crash the browser's graphics process,
+        which stops the game. Reload to keep playing; progress since your last save is lost.</li>
+    </ul>
     <p id="error"></p>
     <p id="status"></p>
     <div class="row">
@@ -324,6 +334,33 @@
   })();
 
   let started = false;
+  let lastCrashCause = '';
+
+  // The game has aborted (e.g. the browser's GPU process restarted, which loses the WebGPU device): show
+  // why, instead of a frozen or black picture with the last audio still playing.
+  function gameStopped() {
+    if (started !== true) return;
+    started = 'stopped'; // no "leave site?" prompt or key capture from here on
+    try { window.Module?.SDL3?.audioContext?.close(); } catch {}
+    try { document.exitPointerLock(); } catch {}
+    const deviceLost = /graphics device was lost|Device lost/i.test(lastCrashCause);
+    const box = document.createElement('div');
+    box.id = 'stopped';
+    box.innerHTML = `<div class="card"><h1>The game stopped</h1><p id="stoppedWhy"></p>
+      <p>Progress since your last save is lost. Reload to keep playing.</p>
+      <div class="row"><button id="stoppedReload">Reload</button>
+      <button class="secondary" id="stoppedExport">Export saves</button></div><p id="stoppedStatus" class="small"></p></div>`;
+    document.body.appendChild(box);
+    $('stoppedWhy').textContent = deviceLost
+      ? "The browser's graphics process restarted, which the game can't recover from yet. On Linux this can " +
+        'happen when switching windows.'
+      : `It hit an error${lastCrashCause ? `: ${lastCrashCause}` : '.'}`;
+    $('stoppedReload').addEventListener('click', () => location.reload());
+    $('stoppedExport').addEventListener('click', () => exportSaves()
+      .then(() => { $('stoppedStatus').textContent = 'Saves exported.'; })
+      .catch((e) => { $('stoppedStatus').textContent = `Export failed: ${e.message}`; }));
+  }
+
   async function start() {
     if (started) return;
     started = true;
@@ -350,7 +387,12 @@
       preRun: [() => { Object.assign(ENV, env); }],
       get displayRefreshHz() { return measuredHz; },
       print: (t) => console.log(t),
-      printErr: (t) => console.warn(t),
+      printErr: (t) => {
+        console.warn(t);
+        // The game prints why it is about to stop ("[crash] cause: ...", crash_handler.h), then aborts.
+        if (t.startsWith('[crash] cause: ')) lastCrashCause = t.slice('[crash] cause: '.length);
+        if (t.startsWith('Aborted(')) gameStopped();
+      },
       // web_platform.cpp: the disc image can't be used -- the game has stopped, so a reload is needed.
       onDiscRejected: (message) => {
         $('panel').hidden = false;
