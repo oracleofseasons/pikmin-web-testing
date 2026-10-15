@@ -337,6 +337,14 @@
     window.addEventListener('beforeunload', (event) => {
       if (started === true) event.preventDefault();
     });
+    // Keys whose browser action would take the keyboard away from the game: Tab moves focus out of the
+    // page (keyboard Y), Alt alone focuses the browser's menu, F1 / F3 / F5 / F6 / F7 / F10 open help,
+    // find, reload, the address bar, caret browsing, the menu. SDL can't cancel them itself: its key
+    // handler runs on the game's thread, after the browser has already decided. (F11 / F12 stay.)
+    const browserKeys = new Set(['Tab', 'Alt', 'F1', 'F3', 'F5', 'F6', 'F7', 'F10']);
+    window.addEventListener('keydown', (event) => {
+      if (started === true && browserKeys.has(event.key)) event.preventDefault();
+    }, { capture: true });
     window.Module = {
       canvas,
       preRun: [() => { Object.assign(ENV, env); }],
