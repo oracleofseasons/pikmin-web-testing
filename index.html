@@ -15,7 +15,7 @@
   #canvas { position: fixed; inset: 0; display: block; background: #000; width: 100vw; height: 100vh; outline: none; }
   #panel { position: absolute; inset: 0; display: flex; align-items: center; justify-content: center; padding: 16px; }
   #panel[hidden] { display: none; }
-  #stopped { position: fixed; inset: 0; z-index: 10; display: flex; align-items: center; justify-content: center;
+  #stopped, #filePick { position: fixed; inset: 0; z-index: 10; display: flex; align-items: center; justify-content: center;
     padding: 16px; background: rgba(0, 0, 0, 0.7); }
   .card { background: var(--panel); border: 1px solid var(--line); border-radius: 10px; padding: 24px 28px;
     max-width: 560px; width: 100%; box-sizing: border-box; }
@@ -42,8 +42,8 @@
 <div id="panel">
   <div class="card">
     <h1>Pikmin Native</h1>
-    <p>Not available in the browser version yet: Super Mario 64 Mode, Online Co&#8209;op, Pikmin 2 Mode, texture packs,
-       custom characters and Discord Rich Presence.</p>
+    <p>Not available in the browser version yet: Online Co&#8209;op, the level editor, texture packs, custom characters and Discord
+       Rich Presence.</p>
     <h2>Known issues</h2>
     <ul class="issues">
       <li>The game may stutter for a few seconds when loading a level for the first time, due to shader compilation.</li>
@@ -102,9 +102,10 @@
     $('gpuWarning').hidden = false;
   }
 
-  async function discDir() {
-    return (await navigator.storage.getDirectory()).getDirectoryHandle('disc', { create: true });
+  async function opfsDir(name) {
+    return (await navigator.storage.getDirectory()).getDirectoryHandle(name, { create: true });
   }
+  const discDir = () => opfsDir('disc');
 
   async function storedDiscName() {
     for await (const [name, handle] of (await discDir()).entries()) {
@@ -113,23 +114,78 @@
     return null;
   }
 
-  // The chosen file replaces whatever disc was stored before.
-  async function storeDisc(file) {
-    const dir = await discDir();
-    for await (const name of dir.keys()) await dir.removeEntry(name, { recursive: true });
+  // Copies `file` into the OPFS folder `dirName`, replacing whatever was stored there before.
+  // While the game runs, a file it still has open can't be removed; that one is left behind.
+  async function storeFile(file, dirName, showStatus) {
+    const dir = await opfsDir(dirName);
+    for await (const name of dir.keys()) {
+      try { await dir.removeEntry(name, { recursive: true }); } catch (e) { console.warn(`[page] couldn't remove ${dirName}/${name}: ${e.message}`); }
+    }
     navigator.storage.persist?.();
     const handle = await dir.getFileHandle(file.name, { create: true });
     const writable = await handle.createWritable();
     const total = file.size;
+    const failed = async (e) => {
+      // No half-copied file left behind (the game would take it for the real one).
+      try { await dir.removeEntry(file.name); } catch {}
+      if (e?.name === 'QuotaExceededError') {
+        throw new Error(`there isn't enough storage space for ${file.name} (${(total / 1e9).toFixed(1)} GB). ` +
+                        'Free up space on the drive the browser keeps its data on, then try again.');
+      }
+      throw e;
+    };
     let done = 0;
     const progress = new TransformStream({
       transform(chunk, controller) {
         done += chunk.byteLength;
-        setStatus(`Copying ${file.name}… ${Math.floor(done * 100 / total)}%`);
+        showStatus(`Copying ${file.name}… ${Math.floor(done * 100 / total)}%`);
         controller.enqueue(chunk);
       },
     });
-    await file.stream().pipeThrough(progress).pipeTo(writable);
+    await file.stream().pipeThrough(progress).pipeTo(writable).catch(failed);
+  }
+  const storeDisc = (file) => storeFile(file, 'disc', setStatus);
+
+  // The game's file dialogs (web_platform.cpp, PikminNative_WebOpenFileDialog): a browser only opens its
+  // file picker from a click on the page, so this shows a window with the file button. Resolves with the
+  // copied file's path in the game's file system, or null when cancelled.
+  function openFileForGame(title, accept, dirName) {
+    return new Promise((resolve, reject) => {
+      try { document.exitPointerLock(); } catch {}
+      const box = document.createElement('div');
+      box.id = 'filePick';
+      box.innerHTML = `<div class="card"><h1 id="filePickTitle"></h1>
+        <p>The file is copied into this browser's storage.</p>
+        <p id="filePickStatus"></p>
+        <div class="row"><label class="button" id="filePickChoose" for="filePickInput">Choose file…</label>
+        <input id="filePickInput" type="file"><button class="secondary" id="filePickCancel">Cancel</button></div></div>`;
+      document.body.appendChild(box);
+      $('filePickTitle').textContent = title;
+      $('filePickInput').accept = accept;
+      const close = () => { box.remove(); canvas.focus(); };
+      $('filePickCancel').onclick = () => { close(); resolve(null); };
+      $('filePickInput').addEventListener('change', async (event) => {
+        const file = event.target.files[0];
+        if (!file) return;
+        $('filePickChoose').hidden = true;
+        $('filePickCancel').hidden = true;
+        try {
+          await storeFile(file, dirName, (t) => { $('filePickStatus').textContent = t; });
+          close();
+          resolve(`/opfs/${dirName}/${file.name}`);
+        } catch (e) {
+          // Stays open with the reason until closed (the game only hears that it failed).
+          $('filePickStatus').textContent = '';
+          const error = document.createElement('p');
+          error.style.color = '#ff9a8f';
+          error.textContent = `Couldn't copy the file: ${e.message}`;
+          $('filePickStatus').after(error);
+          $('filePickCancel').textContent = 'Close';
+          $('filePickCancel').hidden = false;
+          $('filePickCancel').onclick = () => { close(); reject(new Error(`couldn't store ${file.name}: ${e.message}`)); };
+        }
+      });
+    });
   }
 
   // Testing aids (not shown anywhere): ?env=NAME=value;NAME2=value sets environment variables the
@@ -171,6 +227,8 @@
     return (c ^ 0xFFFFFFFF) >>> 0;
   }
   const isCache = (name) => /\.db(-wal|-shm)?$/.test(name);
+  // Folders the game rebuilds by itself, kept out of exports: the files Pikmin 2 Mode converts from the disc.
+  const isRebuilt = (path) => path === 'p2types/' || path.startsWith('p2types.building');
 
   async function dataDir() {
     return (await navigator.storage.getDirectory()).getDirectoryHandle('data', { create: true });
@@ -178,7 +236,9 @@
 
   async function collectSaves(dir, prefix, out) {
     for await (const [name, handle] of dir.entries()) {
-      if (handle.kind === 'directory') await collectSaves(handle, prefix + name + '/', out);
+      if (handle.kind === 'directory') {
+        if (!isRebuilt(prefix + name + '/')) await collectSaves(handle, prefix + name + '/', out);
+      }
       else if (!isCache(name)) out.push({ path: prefix + name, bytes: new Uint8Array(await (await handle.getFile()).arrayBuffer()) });
     }
     return out;
@@ -314,10 +374,10 @@
       setError(`Import failed: ${e.message}`);
     }
   });
-  // Everything this site keeps: saves, settings, caches and the stored disc image.
+  // Everything this site keeps: saves, settings, caches and the stored disc images and ROM.
   $('reset').addEventListener('click', async () => {
     if (!confirm('Delete ALL data this site keeps in this browser?\n\nThis deletes your saves, settings and the ' +
-                 'stored disc image, and can\'t be undone. Export your saves first if you want to keep them.')) {
+                 'stored disc images and Super Mario 64 ROM, and can\'t be undone. Export your saves first if you want to keep them.')) {
       return;
     }
     setError('');
@@ -408,6 +468,7 @@
       canvas,
       preRun: [() => { Object.assign(ENV, env); }],
       get displayRefreshHz() { return measuredHz; },
+      pikminOpenFile: openFileForGame,
       print: (t) => console.log(t),
       printErr: (t) => {
         console.warn(t);
